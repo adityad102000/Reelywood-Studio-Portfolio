@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Category, Project, TileSize, MediaType } from '../../types';
-import { fetchCategories, createProject, updateProject, uploadMedia } from '../../lib/supabase';
-import { Upload, Image, Video, Sparkles, CheckCircle2, LayoutGrid, ArrowLeft } from 'lucide-react';
+import { fetchCategories, createProject, updateProject, uploadMultipleMedia } from '../../lib/supabase';
+import { INITIAL_CATEGORIES } from '../../data/mockData';
+import { compressMultipleFiles } from '../../lib/imageCompression';
+import { Upload, Image, Video, Sparkles, CheckCircle2, LayoutGrid, ArrowLeft, Trash2, Plus, Star, Zap } from 'lucide-react';
 
 interface ProjectFormProps {
   initialProject?: Project | null;
@@ -19,6 +21,14 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
   const [description, setDescription] = useState(initialProject?.description || '');
   const [categoryId, setCategoryId] = useState(initialProject?.category_id || '');
   const [mediaUrl, setMediaUrl] = useState(initialProject?.media_url || '');
+  const [galleryUrls, setGalleryUrls] = useState<string[]>(
+    initialProject?.gallery_urls && initialProject.gallery_urls.length > 0
+      ? initialProject.gallery_urls
+      : initialProject?.media_url
+      ? [initialProject.media_url]
+      : []
+  );
+  const [newUrlInput, setNewUrlInput] = useState('');
   const [mediaType, setMediaType] = useState<MediaType>(initialProject?.media_type || 'image');
   const [tileSize, setTileSize] = useState<TileSize>(initialProject?.tile_size || 'small');
   const [displayOrder, setDisplayOrder] = useState<number>(initialProject?.display_order || 0);
@@ -33,10 +43,21 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
 
   useEffect(() => {
     const loadCats = async () => {
-      const cats = await fetchCategories();
-      setCategories(cats);
-      if (cats.length > 0 && !categoryId) {
-        setCategoryId(cats[0].id);
+      try {
+        let cats = await fetchCategories();
+        if (!cats || cats.length === 0) {
+          cats = INITIAL_CATEGORIES;
+        }
+        setCategories(cats);
+        if (cats.length > 0 && !categoryId) {
+          setCategoryId(cats[0].id);
+        }
+      } catch (err) {
+        console.warn('Failed to load categories:', err);
+        setCategories(INITIAL_CATEGORIES);
+        if (!categoryId && INITIAL_CATEGORIES.length > 0) {
+          setCategoryId(INITIAL_CATEGORIES[0].id);
+        }
       }
     };
     loadCats();
@@ -46,33 +67,82 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const file = files[0];
     setUploading(true);
     setErrorMsg(null);
 
-    // Detect media type
-    if (file.type.startsWith('video/')) {
-      setMediaType('video');
-    } else {
-      setMediaType('image');
-    }
-
     try {
-      const url = await uploadMedia(file);
-      setMediaUrl(url);
+      // Client-side image compression prior to uploading
+      const filesToUpload = await compressMultipleFiles(files, {
+        maxWidth: 1920,
+        maxHeight: 1080,
+        quality: 0.82,
+      });
+
+      const uploadedUrls = await uploadMultipleMedia(filesToUpload);
+      const updatedGallery = [...galleryUrls, ...uploadedUrls];
+      setGalleryUrls(updatedGallery);
+
+      // Primary cover is the first uploaded image if not set
+      if (!mediaUrl || galleryUrls.length === 0) {
+        setMediaUrl(uploadedUrls[0]);
+      }
+
+      if (files[0].type.startsWith('video/')) {
+        setMediaType('video');
+      } else {
+        setMediaType('image');
+      }
     } catch (err: any) {
-      setErrorMsg(`Upload failed: ${err.message || 'Error uploading file'}`);
+      setErrorMsg(`Upload failed: ${err.message || 'Error uploading file(s)'}`);
     } finally {
       setUploading(false);
+      // Reset input value to allow re-uploading same file if desired
+      e.target.value = '';
     }
+  };
+
+  const handleAddUrl = () => {
+    const trimmed = newUrlInput.trim();
+    if (!trimmed) return;
+    const updated = [...galleryUrls, trimmed];
+    setGalleryUrls(updated);
+    if (!mediaUrl) {
+      setMediaUrl(trimmed);
+    }
+    setNewUrlInput('');
+  };
+
+  const handleRemoveImage = (index: number) => {
+    const urlToRemove = galleryUrls[index];
+    const updated = galleryUrls.filter((_, i) => i !== index);
+    setGalleryUrls(updated);
+
+    // If removed item was primary media URL, pick new primary
+    if (urlToRemove === mediaUrl) {
+      setMediaUrl(updated[0] || '');
+    }
+  };
+
+  const handleSetPrimaryCover = (url: string) => {
+    setMediaUrl(url);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !mediaUrl || !categoryId) {
+    const finalMediaUrl = mediaUrl || galleryUrls[0] || '';
+    let selectedCatId = categoryId;
+
+    if (!selectedCatId && categories.length > 0) {
+      selectedCatId = categories[0].id;
+      setCategoryId(selectedCatId);
+    }
+
+    if (!title.trim() || !finalMediaUrl || !selectedCatId) {
       setErrorMsg('Please complete all required fields (Title, Category, Media URL/Upload).');
       return;
     }
+
+    const finalGallery = galleryUrls.length > 0 ? galleryUrls : [finalMediaUrl];
 
     setSaving(true);
     setErrorMsg(null);
@@ -80,35 +150,38 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
     try {
       if (initialProject) {
         await updateProject(initialProject.id, {
-          title,
-          description,
-          category_id: categoryId,
-          media_url: mediaUrl,
+          title: title.trim(),
+          description: description.trim(),
+          category_id: selectedCatId,
+          media_url: finalMediaUrl,
+          gallery_urls: finalGallery,
           media_type: mediaType,
           tile_size: tileSize,
           display_order: displayOrder,
           published,
-          client_name: clientName,
-          year,
-          stats_highlight: statsHighlight,
+          client_name: clientName.trim(),
+          year: year.trim(),
+          stats_highlight: statsHighlight.trim(),
         });
       } else {
         await createProject({
-          title,
-          description,
-          category_id: categoryId,
-          media_url: mediaUrl,
+          title: title.trim(),
+          description: description.trim(),
+          category_id: selectedCatId,
+          media_url: finalMediaUrl,
+          gallery_urls: finalGallery,
           media_type: mediaType,
           tile_size: tileSize,
           display_order: displayOrder,
           published,
-          client_name: clientName,
-          year,
-          stats_highlight: statsHighlight,
+          client_name: clientName.trim(),
+          year: year.trim(),
+          stats_highlight: statsHighlight.trim(),
         });
       }
       onSuccess();
     } catch (err: any) {
+      console.error('Submit error:', err);
       setErrorMsg(err.message || 'Failed to save project.');
     } finally {
       setSaving(false);
@@ -130,7 +203,7 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
               {initialProject ? 'EDIT PROJECT' : 'ADD NEW PROJECT'}
             </h3>
             <p className="text-xs text-neutral-400">
-              Configure bento grid tile, media, and campaign specs.
+              Configure bento grid tile, multi-image gallery storage, and specs.
             </p>
           </div>
         </div>
@@ -177,19 +250,34 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
           </div>
         </div>
 
-        {/* Media Upload / URL */}
-        <div className="p-4 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-3">
-          <label className="block text-[10px] font-bold uppercase tracking-wider text-neutral-400">
-            Project Media (Image or Video) *
-          </label>
+        {/* Media Upload / Multi-Image Storage */}
+        <div className="p-4 rounded-2xl bg-neutral-950 border border-neutral-800 space-y-4">
+          <div className="flex items-center justify-between">
+            <label className="block text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+              Project Media & Gallery Images (Upload 1 or Multiple) *
+            </label>
+            <span className="text-[10px] font-mono text-[#D4FF00]">
+              {galleryUrls.length} {galleryUrls.length === 1 ? 'Image' : 'Images'} Stored
+            </span>
+          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
-            {/* File Upload Trigger */}
-            <label className="flex items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-neutral-700 bg-neutral-900/60 text-xs font-bold text-neutral-300 hover:border-[#D4FF00] hover:text-[#D4FF00] transition-colors cursor-pointer">
-              <Upload className="w-4 h-4 text-[#D4FF00]" />
-              <span>{uploading ? 'Uploading to Storage...' : 'Upload File to Supabase Storage'}</span>
+            {/* File Upload Trigger with Multiple attribute */}
+            <label className="flex flex-col items-center justify-center gap-1.5 p-4 rounded-xl border border-dashed border-neutral-700 bg-neutral-900/60 text-xs font-bold text-neutral-300 hover:border-[#D4FF00] hover:text-[#D4FF00] transition-colors cursor-pointer">
+              <div className="flex items-center gap-2">
+                {uploading ? (
+                  <Zap className="w-4 h-4 text-[#D4FF00] animate-bounce" />
+                ) : (
+                  <Upload className="w-4 h-4 text-[#D4FF00]" />
+                )}
+                <span>{uploading ? 'Compressing & Uploading to Supabase...' : 'Upload Image(s) / Files'}</span>
+              </div>
+              <span className="text-[10px] font-mono text-neutral-400 font-normal">
+                Auto-resizes & compresses high-res images before upload
+              </span>
               <input
                 type="file"
+                multiple
                 accept="image/*,video/*"
                 onChange={handleFileUpload}
                 disabled={uploading}
@@ -198,56 +286,116 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
             </label>
 
             {/* Direct URL Input */}
-            <div>
+            <div className="flex items-center gap-2">
               <input
                 type="url"
-                value={mediaUrl}
-                onChange={(e) => setMediaUrl(e.target.value)}
-                placeholder="Or paste media URL (https://...)"
-                className="w-full px-4 py-3.5 rounded-xl bg-neutral-900 border border-neutral-800 text-white text-xs focus:border-[#D4FF00] focus:outline-none"
+                value={newUrlInput}
+                onChange={(e) => setNewUrlInput(e.target.value)}
+                placeholder="Or paste image URL (https://...)"
+                className="flex-1 px-4 py-3.5 rounded-xl bg-neutral-900 border border-neutral-800 text-white text-xs focus:border-[#D4FF00] focus:outline-none"
               />
+              <button
+                type="button"
+                onClick={handleAddUrl}
+                className="p-3.5 rounded-xl bg-neutral-800 text-[#D4FF00] hover:bg-[#D4FF00] hover:text-black transition-colors"
+                title="Add Image URL to Gallery"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
           </div>
 
-          {/* Media Type Switch & Preview */}
-          {mediaUrl && (
-            <div className="flex items-center justify-between pt-2">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMediaType('image')}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold uppercase flex items-center gap-1.5 ${
-                    mediaType === 'image'
-                      ? 'bg-[#D4FF00] text-black'
-                      : 'bg-neutral-800 text-neutral-400'
-                  }`}
-                >
-                  <Image className="w-3.5 h-3.5" />
-                  Image
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMediaType('video')}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold uppercase flex items-center gap-1.5 ${
-                    mediaType === 'video'
-                      ? 'bg-[#D4FF00] text-black'
-                      : 'bg-neutral-800 text-neutral-400'
-                  }`}
-                >
-                  <Video className="w-3.5 h-3.5" />
-                  Video
-                </button>
-              </div>
+          {/* Gallery Thumbnails List */}
+          {galleryUrls.length > 0 && (
+            <div className="space-y-2 pt-2 border-t border-neutral-800">
+              <span className="text-[10px] font-mono uppercase text-neutral-400 block">
+                Stored Gallery Assets ({galleryUrls.length}) - Select Primary Cover Tile:
+              </span>
+              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                {galleryUrls.map((url, idx) => {
+                  const isPrimary = url === mediaUrl;
+                  return (
+                    <div
+                      key={idx}
+                      className={`relative group rounded-xl overflow-hidden border transition-all ${
+                        isPrimary
+                          ? 'border-[#D4FF00] shadow-[0_0_15px_rgba(212,255,0,0.3)] ring-2 ring-[#D4FF00]/50'
+                          : 'border-neutral-800 hover:border-neutral-600'
+                      }`}
+                    >
+                      <div className="w-full h-20 bg-black">
+                        {mediaType === 'video' && idx === 0 ? (
+                          <video src={url} className="w-full h-full object-cover" />
+                        ) : (
+                          <img src={url} alt={`Gallery ${idx + 1}`} className="w-full h-full object-cover" />
+                        )}
+                      </div>
 
-              <div className="w-12 h-12 rounded-lg overflow-hidden border border-neutral-700 bg-black shrink-0">
-                {mediaType === 'video' ? (
-                  <video src={mediaUrl} className="w-full h-full object-cover" />
-                ) : (
-                  <img src={mediaUrl} alt="Preview" className="w-full h-full object-cover" />
-                )}
+                      {/* Cover Badge */}
+                      {isPrimary && (
+                        <div className="absolute top-1 left-1 bg-[#D4FF00] text-black font-black text-[8px] uppercase px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                          <Star className="w-2.5 h-2.5 fill-black" />
+                          Cover
+                        </div>
+                      )}
+
+                      {/* Action buttons on hover */}
+                      <div className="absolute inset-0 bg-black/75 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1 p-1">
+                        {!isPrimary && (
+                          <button
+                            type="button"
+                            onClick={() => handleSetPrimaryCover(url)}
+                            className="px-2 py-0.5 rounded bg-[#D4FF00] text-black font-extrabold text-[9px] uppercase tracking-wider"
+                          >
+                            Set Cover
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveImage(idx)}
+                          className="p-1 rounded bg-red-950/80 text-red-300 hover:bg-red-800 hover:text-white transition-colors"
+                          title="Delete image"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
+
+          {/* Media Type Selector */}
+          <div className="flex items-center justify-between pt-1">
+            <span className="text-[10px] font-bold uppercase text-neutral-400">Media Format</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setMediaType('image')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold uppercase flex items-center gap-1.5 ${
+                  mediaType === 'image'
+                    ? 'bg-[#D4FF00] text-black'
+                    : 'bg-neutral-800 text-neutral-400'
+                }`}
+              >
+                <Image className="w-3.5 h-3.5" />
+                Image
+              </button>
+              <button
+                type="button"
+                onClick={() => setMediaType('video')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold uppercase flex items-center gap-1.5 ${
+                  mediaType === 'video'
+                    ? 'bg-[#D4FF00] text-black'
+                    : 'bg-neutral-800 text-neutral-400'
+                }`}
+              >
+                <Video className="w-3.5 h-3.5" />
+                Video
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Bento Tile Size Selector */}
@@ -380,7 +528,7 @@ export const ProjectForm: React.FC<ProjectFormProps> = ({
           </button>
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || uploading}
             className="btn-shimmer px-8 py-3.5 rounded-full bg-[#D4FF00] text-black font-black text-xs uppercase tracking-widest"
           >
             {saving ? 'Saving...' : initialProject ? 'Update Project' : 'Publish to Bento Vault'}

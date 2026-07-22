@@ -14,6 +14,7 @@ export interface Project {
   category_id: string;
   category?: Category;
   media_url: string;
+  gallery_urls?: string[];
   media_type: MediaType;
   tile_size: TileSize;
   display_order: number;

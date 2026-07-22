@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Project } from '../types';
-import { X, Calendar, Building, Sparkles, ArrowLeft } from 'lucide-react';
+import { X, Calendar, Building, Sparkles, ArrowLeft, Images } from 'lucide-react';
 
 interface ProjectModalProps {
   project: Project | null;
@@ -11,6 +11,12 @@ interface ProjectModalProps {
 
 export const ProjectModal: React.FC<ProjectModalProps> = ({ project, onClose, onBookSimilar }) => {
   if (!project) return null;
+
+  const galleryList = project.gallery_urls && project.gallery_urls.length > 0
+    ? project.gallery_urls
+    : [project.media_url];
+
+  const [activeMediaUrl, setActiveMediaUrl] = useState<string>(project.media_url || galleryList[0]);
 
   return (
     <AnimatePresence>
@@ -42,24 +48,24 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, onClose, on
 
           {/* Media Header Area */}
           <div className="relative w-full h-[280px] sm:h-[400px] bg-neutral-950 overflow-hidden">
-            {project.media_type === 'video' ? (
+            {project.media_type === 'video' && activeMediaUrl === project.media_url ? (
               <video
-                src={project.media_url}
+                src={activeMediaUrl}
                 controls
                 autoPlay
                 className="w-full h-full object-cover"
               />
             ) : (
               <img
-                src={project.media_url}
+                src={activeMediaUrl}
                 alt={project.title}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover transition-all duration-300"
               />
             )}
-            <div className="absolute inset-0 bg-gradient-to-t from-neutral-900 via-neutral-900/20 to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-t from-neutral-900 via-neutral-900/20 to-transparent pointer-events-none" />
 
             {/* Category Tag Overlay */}
-            <div className="absolute top-6 left-6 flex items-center gap-2">
+            <div className="absolute top-6 left-6 flex items-center gap-2 z-10">
               <span className="px-3.5 py-1.5 rounded-full bg-[#D4FF00] text-black font-extrabold text-xs uppercase tracking-wider shadow-lg">
                 {project.category?.name || 'Showcase'}
               </span>
@@ -71,6 +77,31 @@ export const ProjectModal: React.FC<ProjectModalProps> = ({ project, onClose, on
               )}
             </div>
           </div>
+
+          {/* Gallery Thumbnails Carousel (If > 1 image stored) */}
+          {galleryList.length > 1 && (
+            <div className="px-6 py-3 bg-neutral-950 border-b border-neutral-800 flex items-center gap-3 overflow-x-auto">
+              <div className="flex items-center gap-1.5 text-xs font-mono uppercase text-neutral-400 shrink-0 pr-2 border-r border-neutral-800">
+                <Images className="w-4 h-4 text-[#D4FF00]" />
+                <span>Gallery ({galleryList.length}):</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {galleryList.map((url, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setActiveMediaUrl(url)}
+                    className={`w-14 h-10 rounded-lg overflow-hidden border-2 shrink-0 transition-all ${
+                      activeMediaUrl === url
+                        ? 'border-[#D4FF00] scale-105 shadow-[0_0_10px_rgba(212,255,0,0.5)]'
+                        : 'border-neutral-800 opacity-60 hover:opacity-100'
+                    }`}
+                  >
+                    <img src={url} alt={`Thumb ${i + 1}`} className="w-full h-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Body Content Area */}
           <div className="p-6 sm:p-10">

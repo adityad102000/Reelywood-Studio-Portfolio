@@ -25,14 +25,9 @@ export default function App() {
 
   // Load all projects for routing & modal lookups
   useEffect(() => {
-    fetchProjects(true)
-      .then((data) => {
-        setAllProjects(data);
-      })
-      .finally(() => {
-        // Small delay to ensure smooth transition
-        setTimeout(() => setInitialLoading(false), 300);
-      });
+    fetchProjects(true).then((data) => {
+      setAllProjects(data);
+    });
   }, [refreshKey]);
 
   // Sync state based on URL hash
@@ -145,7 +140,12 @@ export default function App() {
     <div className="min-h-screen bg-[#0A0A0A] text-slate-100 font-['Urbanist',sans-serif] selection:bg-[#D4FF00] selection:text-black">
       {/* Global Page Transition Loader Overlay */}
       <AnimatePresence>
-        {initialLoading && <GlobalLoader isLoading={initialLoading} />}
+        {initialLoading && (
+          <GlobalLoader
+            isLoading={initialLoading}
+            onComplete={() => setInitialLoading(false)}
+          />
+        )}
       </AnimatePresence>
 
       {/* Top Navbar */}
