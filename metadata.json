@@ -1,0 +1,6 @@
+{
+  "name": "Reelywood Brand Portfolio",
+  "description": "Immersive brand portfolio and creative agency website for Reelywood featuring Bento grid showcase, service list, rotating hero, and Supabase admin management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
