@@ -65,11 +65,47 @@ create table if not exists projects (
   created_at timestamptz not null default now()
 );
 
+-- Add columns if table was created previously without them
+do $$
+begin
+  if not exists (select 1 from information_schema.columns where table_name='projects' and column_name='gallery_urls') then
+    alter table projects add column gallery_urls text[] default '{}';
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name='projects' and column_name='client_name') then
+    alter table projects add column client_name text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name='projects' and column_name='year') then
+    alter table projects add column year text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name='projects' and column_name='stats_highlight') then
+    alter table projects add column stats_highlight text;
+  end if;
+end $$;
+
 -- 3. Row Level Security Policies
 alter table categories enable row level security;
 alter table projects enable row level security;
 
--- Public / Anon access policies for demo & admin portal
+-- Drop existing policies if present to prevent ERROR 42710 (policy already exists)
+drop policy if exists "Public can view categories" on categories;
+drop policy if exists "Public view categories" on categories;
+drop policy if exists "Public select categories" on categories;
+drop policy if exists "Public insert categories" on categories;
+drop policy if exists "Public update categories" on categories;
+drop policy if exists "Public delete categories" on categories;
+drop policy if exists "Authenticated can manage categories" on categories;
+drop policy if exists "Auth manage categories" on categories;
+
+drop policy if exists "Public can view published projects" on projects;
+drop policy if exists "Public view published" on projects;
+drop policy if exists "Public select projects" on projects;
+drop policy if exists "Public insert projects" on projects;
+drop policy if exists "Public update projects" on projects;
+drop policy if exists "Public delete projects" on projects;
+drop policy if exists "Authenticated can manage projects" on projects;
+drop policy if exists "Auth manage projects" on projects;
+
+-- Create policies allowing full CRUD for app functionality
 create policy "Public select categories" on categories for select using (true);
 create policy "Public insert categories" on categories for insert with check (true);
 create policy "Public update categories" on categories for update using (true);
@@ -84,6 +120,15 @@ create policy "Public delete projects" on projects for delete using (true);
 insert into storage.buckets (id, name, public)
 values ('project-media', 'project-media', true)
 on conflict (id) do nothing;
+
+drop policy if exists "Public can view project media" on storage.objects;
+drop policy if exists "Authenticated can upload project media" on storage.objects;
+drop policy if exists "Authenticated can update project media" on storage.objects;
+drop policy if exists "Authenticated can delete project media" on storage.objects;
+drop policy if exists "Public media select" on storage.objects;
+drop policy if exists "Public media insert" on storage.objects;
+drop policy if exists "Public media update" on storage.objects;
+drop policy if exists "Public media delete" on storage.objects;
 
 create policy "Public media select" on storage.objects for select using (bucket_id = 'project-media');
 create policy "Public media insert" on storage.objects for insert with check (bucket_id = 'project-media');

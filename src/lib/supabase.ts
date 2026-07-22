@@ -197,48 +197,71 @@ export async function createProject(project: Omit<Project, 'id' | 'created_at'>)
 
   if (supabase) {
     try {
-      let validCategoryId = project.category_id;
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(validCategoryId);
+      // 1. Resolve a valid Supabase category ID to satisfy FK constraint
+      let validCategoryId: string | null = null;
 
-      if (!isUuid) {
-        // Resolve category name to a Supabase UUID category
-        const localCats = getLocalCategories();
-        const localCat = localCats.find((c) => c.id === validCategoryId);
-        const catName = localCat?.name || 'General';
-
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(project.category_id)) {
         const { data: existingCat } = await supabase
+          .from('categories')
+          .select('id')
+          .eq('id', project.category_id)
+          .maybeSingle();
+        if (existingCat?.id) {
+          validCategoryId = existingCat.id;
+        }
+      }
+
+      if (!validCategoryId) {
+        const localCats = getLocalCategories();
+        const localCat = localCats.find((c) => c.id === project.category_id);
+        const catName = localCat?.name || (typeof project.category === 'object' ? project.category?.name : 'General');
+
+        const { data: nameMatch } = await supabase
           .from('categories')
           .select('id')
           .ilike('name', catName)
           .maybeSingle();
 
-        if (existingCat?.id) {
-          validCategoryId = existingCat.id;
+        if (nameMatch?.id) {
+          validCategoryId = nameMatch.id;
         } else {
-          // Attempt inserting missing category into Supabase
           const { data: newCat } = await supabase
             .from('categories')
             .insert([{ name: catName }])
             .select('id')
-            .single();
+            .maybeSingle();
 
           if (newCat?.id) {
             validCategoryId = newCat.id;
           } else {
-            // Get any available category ID from Supabase
             const { data: anyCat } = await supabase
               .from('categories')
               .select('id')
               .limit(1)
               .maybeSingle();
+
             if (anyCat?.id) {
               validCategoryId = anyCat.id;
+            } else {
+              const { data: defCat } = await supabase
+                .from('categories')
+                .insert([{ name: 'General' }])
+                .select('id')
+                .single();
+              if (defCat?.id) {
+                validCategoryId = defCat.id;
+              }
             }
           }
         }
       }
 
-      const payload: any = {
+      if (!validCategoryId) {
+        throw new Error('Failed to resolve or create a valid Category in Supabase database.');
+      }
+
+      // 2. Prepare payloads
+      const fullPayload: any = {
         title: project.title,
         description: project.description,
         category_id: validCategoryId,
@@ -253,33 +276,85 @@ export async function createProject(project: Omit<Project, 'id' | 'created_at'>)
         stats_highlight: project.stats_highlight,
       };
 
-      let { data, error } = await supabase
-        .from('projects')
-        .insert([payload])
-        .select('*, category:categories(*)')
-        .single();
+      const corePayload: any = {
+        title: project.title,
+        description: project.description,
+        category_id: validCategoryId,
+        media_url: project.media_url,
+        media_type: project.media_type,
+        tile_size: project.tile_size,
+        display_order: project.display_order,
+        published: project.published,
+      };
 
-      // If gallery_urls column doesn't exist in user schema, try without it
-      if (error && (error.message?.includes('gallery_urls') || error.code === 'PGRST204')) {
-        delete payload.gallery_urls;
-        const res = await supabase
+      let resultData: any = null;
+
+      // Attempt 1: Full payload + joined category select
+      const res1 = await supabase
+        .from('projects')
+        .insert([fullPayload])
+        .select('*, category:categories(*)')
+        .maybeSingle();
+
+      if (!res1.error && res1.data) {
+        resultData = res1.data;
+      } else {
+        // Attempt 2: Full payload + simple select
+        const res2 = await supabase
           .from('projects')
-          .insert([payload])
-          .select('*, category:categories(*)')
-          .single();
-        if (!res.error && res.data) {
-          error = null;
-          data = { ...res.data, gallery_urls: galleryUrls };
+          .insert([fullPayload])
+          .select('*')
+          .maybeSingle();
+
+        if (!res2.error && res2.data) {
+          resultData = res2.data;
+        } else {
+          // Attempt 3: Core payload + joined category select
+          const res3 = await supabase
+            .from('projects')
+            .insert([corePayload])
+            .select('*, category:categories(*)')
+            .maybeSingle();
+
+          if (!res3.error && res3.data) {
+            resultData = res3.data;
+          } else {
+            // Attempt 4: Core payload + simple select
+            const res4 = await supabase
+              .from('projects')
+              .insert([corePayload])
+              .select('*')
+              .maybeSingle();
+
+            if (!res4.error && res4.data) {
+              resultData = res4.data;
+            } else {
+              console.warn('All Supabase insert attempts failed:', res4.error || res3.error || res2.error || res1.error);
+            }
+          }
         }
       }
 
-      if (!error && data) {
+      if (resultData) {
+        if (!resultData.gallery_urls || resultData.gallery_urls.length === 0) {
+          resultData.gallery_urls = galleryUrls;
+        }
+
+        if (!resultData.category) {
+          const { data: catData } = await supabase
+            .from('categories')
+            .select('*')
+            .eq('id', validCategoryId)
+            .maybeSingle();
+          resultData.category = catData || { id: validCategoryId, name: 'General' };
+        }
+
         // Sync local storage cache
         const currentLocal = getLocalProjects();
-        saveLocalProjects([data as Project, ...currentLocal]);
-        return data as Project;
+        saveLocalProjects([resultData as Project, ...currentLocal]);
+
+        return resultData as Project;
       }
-      console.warn('Supabase createProject insert issue, using fallback:', error);
     } catch (err) {
       console.warn('Supabase createProject exception, using fallback:', err);
     }
@@ -313,55 +388,95 @@ export async function updateProject(id: string, updates: Partial<Project>): Prom
       if (isUuid) {
         const { category, ...cleanUpdates } = updates as any;
 
-        if (
-          cleanUpdates.category_id &&
-          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanUpdates.category_id)
-        ) {
-          const localCats = getLocalCategories();
-          const localCat = localCats.find((c) => c.id === cleanUpdates.category_id);
-          if (localCat) {
+        if (cleanUpdates.category_id) {
+          let validCatId: string | null = null;
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanUpdates.category_id)) {
             const { data: match } = await supabase
               .from('categories')
               .select('id')
-              .ilike('name', localCat.name)
+              .eq('id', cleanUpdates.category_id)
               .maybeSingle();
-            if (match?.id) {
-              cleanUpdates.category_id = match.id;
-            } else {
-              delete cleanUpdates.category_id;
+            if (match?.id) validCatId = match.id;
+          }
+
+          if (!validCatId) {
+            const localCats = getLocalCategories();
+            const localCat = localCats.find((c) => c.id === cleanUpdates.category_id);
+            if (localCat) {
+              const { data: nameMatch } = await supabase
+                .from('categories')
+                .select('id')
+                .ilike('name', localCat.name)
+                .maybeSingle();
+              if (nameMatch?.id) validCatId = nameMatch.id;
             }
+          }
+
+          if (validCatId) {
+            cleanUpdates.category_id = validCatId;
           } else {
             delete cleanUpdates.category_id;
           }
         }
 
-        let { data, error } = await supabase
+        let updatedData: any = null;
+
+        // Attempt 1: Full updates + joined category select
+        const res1 = await supabase
           .from('projects')
           .update(cleanUpdates)
           .eq('id', id)
           .select('*, category:categories(*)')
-          .single();
+          .maybeSingle();
 
-        if (error && (error.message?.includes('gallery_urls') || error.code === 'PGRST204')) {
-          const fallbackUpdates = { ...cleanUpdates };
-          delete fallbackUpdates.gallery_urls;
-          const res = await supabase
+        if (!res1.error && res1.data) {
+          updatedData = res1.data;
+        } else {
+          // Attempt 2: Full updates + simple select
+          const res2 = await supabase
             .from('projects')
-            .update(fallbackUpdates)
+            .update(cleanUpdates)
             .eq('id', id)
-            .select('*, category:categories(*)')
-            .single();
-          if (!res.error && res.data) {
-            error = null;
-            data = { ...res.data, gallery_urls: updates.gallery_urls };
+            .select('*')
+            .maybeSingle();
+
+          if (!res2.error && res2.data) {
+            updatedData = res2.data;
+          } else {
+            // Attempt 3: Core updates + simple select
+            const coreUpdates = { ...cleanUpdates };
+            delete coreUpdates.gallery_urls;
+            delete coreUpdates.client_name;
+            delete coreUpdates.year;
+            delete coreUpdates.stats_highlight;
+
+            const res3 = await supabase
+              .from('projects')
+              .update(coreUpdates)
+              .eq('id', id)
+              .select('*')
+              .maybeSingle();
+
+            if (!res3.error && res3.data) {
+              updatedData = res3.data;
+            }
           }
         }
 
-        if (!error && data) {
+        if (updatedData) {
+          if (!updatedData.category && updatedData.category_id) {
+            const { data: catData } = await supabase
+              .from('categories')
+              .select('*')
+              .eq('id', updatedData.category_id)
+              .maybeSingle();
+            updatedData.category = catData;
+          }
+
           const projects = getLocalProjects();
-          const updatedLocal = projects.map((p) => (p.id === id ? (data as Project) : p));
+          const updatedLocal = projects.map((p) => (p.id === id ? (updatedData as Project) : p));
           saveLocalProjects(updatedLocal);
-          return data as Project;
+          return updatedData as Project;
         }
       }
     } catch (err) {
